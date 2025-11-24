@@ -19,8 +19,14 @@ except ImportError:
     st = None
 
 # ---- CONFIGURATION ----
-# List of models to try in order of preference.
-MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-1.5-flash-001", "gemini-pro"]
+# 1. Preferred models (Tried first)
+MODELS_TO_TRY = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+    "gemini-1.0-pro", 
+    "gemini-pro"
+]
 
 def _get_api_key() -> Optional[str]:
     """
@@ -54,6 +60,22 @@ def _initialize_genai():
         return False
 
 
+def _get_fallback_model_name() -> Optional[str]:
+    """
+    Auto-discovery: Queries the API for ANY available model that supports generation.
+    Used if all hardcoded model names fail.
+    """
+    try:
+        logger.info("Attempting to auto-discover available models...")
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                logger.info(f"Auto-discovered valid model: {m.name}")
+                return m.name
+    except Exception as e:
+        logger.error(f"Auto-discovery failed: {e}")
+    return None
+
+
 def _safe_call_model(prompt: str) -> str:
     """
     Executes the API call with error handling, model fallback, and lenient safety settings.
@@ -64,28 +86,34 @@ def _safe_call_model(prompt: str) -> str:
     last_error = None
 
     # ---- SAFETY SETTINGS ----
-    # We disable blocks because academic terms like "Fail", "Risk", or "Poor Performance" 
-    # often trigger false positives in the harassment/hate speech categories.
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     }
+    
+    # Define generation config
+    config = genai.GenerationConfig(
+        temperature=0.7,
+        max_output_tokens=800,
+    )
+
+    # 1. Try Hardcoded Preferred Models
+    candidate_models = MODELS_TO_TRY.copy()
+    
+    # 2. Add Auto-discovered model to the end of the list as a last resort
+    fallback = _get_fallback_model_name()
+    if fallback and fallback not in candidate_models:
+        candidate_models.append(fallback)
 
     # Iterate through models list to find one that works
-    for model_name in MODELS_TO_TRY:
+    for model_name in candidate_models:
         try:
             # Create model instance
             model = genai.GenerativeModel(model_name)
-            
-            # Generation Config
-            config = genai.GenerationConfig(
-                temperature=0.7,
-                max_output_tokens=800, # Increased slightly for detailed advice
-            )
 
-            # Attempt generation with explicit safety settings
+            # Attempt generation
             response = model.generate_content(
                 prompt, 
                 generation_config=config,
@@ -94,20 +122,19 @@ def _safe_call_model(prompt: str) -> str:
             
             # Check if response was blocked or empty
             if not response.parts:
-                # Sometimes parts are empty but text is available via a different path in older libs,
-                # but usually this means a block.
                 try:
                     return response.text
                 except ValueError:
                     logger.warning(f"Gemini ({model_name}) response was blocked despite safety settings.")
-                    return "⚠️ **AI Analysis Unavailable:** The model refused to answer. Try simplifying the student data or request."
+                    return "⚠️ **AI Analysis Unavailable:** The model refused to answer (Safety Block)."
 
             return response.text
 
         except Exception as e:
+            # 404 means model not found, try next. Other errors might be auth related.
             logger.warning(f"Failed to use model '{model_name}': {e}")
             last_error = e
-            continue # Try the next model in the list
+            continue 
 
     logger.error(f"All Gemini models failed. Last error: {last_error}")
     return f"⚠️ **AI Error:** Could not reach any Gemini model. (Last error: {str(last_error)})"
