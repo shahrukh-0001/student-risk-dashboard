@@ -300,19 +300,23 @@ def main():
     )
 
     if st.button("Generate AI Insights"):
-        summary_dict = {
-            "total_students": int(total_students),
-            "pass_count": int(pass_count),
-            "fail_count": int(fail_count),
-            "avg_attendance": float(avg_attendance)
-            if avg_attendance is not None
-            else None,
-            "avg_total": float(avg_total) if avg_total is not None else None,
-            "avg_fail_probability": float(avg_fail_prob),
-        }
+            summary_dict = {
+        "total_students": int(total_students),
+        "pass_count": int(pass_count),
+        "fail_count": int(fail_count),
+        "avg_attendance": float(avg_attendance) if avg_attendance is not None else None,
+        "avg_total": float(avg_total) if avg_total is not None else None,
+        "avg_fail_probability": float(avg_fail_prob),
+    }
+
+    try:
         with st.spinner("Asking AI for insights..."):
             insights = generate_dataset_insights(summary_dict, dataset_extra)
         st.markdown(insights)
+    except Exception as e:
+        st.error("⚠️ AI insights are temporarily unavailable.")
+        st.text(str(e))
+
 
     # ---- STUDENT-WISE AI ADVICE ----
     st.markdown("## 👤 Student-wise AI Advice")
