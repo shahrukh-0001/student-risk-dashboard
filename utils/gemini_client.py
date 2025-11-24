@@ -79,9 +79,10 @@ def _get_fallback_model_name() -> Optional[str]:
         logger.error(f"Auto-discovery failed: {e}")
     return None
 
-def _generate_with_retry(model, prompt, config, safety_settings, max_retries=3):
+def _generate_with_retry(model, prompt, config, safety_settings, max_retries=5):
     """
-    Helper function to handle 429 Rate Limit errors with backoff.
+    Helper function to handle 429 Rate Limit errors with aggressive backoff.
+    Increased max_retries to 5 to handle longer quota resets (~30s+).
     """
     for attempt in range(max_retries):
         try:
@@ -95,9 +96,14 @@ def _generate_with_retry(model, prompt, config, safety_settings, max_retries=3):
             # Check for rate limit (429) or quota errors
             if "429" in error_str or "quota" in error_str:
                 if attempt < max_retries - 1:
-                    # Exponential backoff: 2s, 4s, 8s... + random jitter
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(f"Rate limit hit for {model.model_name}. Retrying in {wait_time:.1f}s...")
+                    # Exponential backoff: 
+                    # Attempt 0: ~2s
+                    # Attempt 1: ~4s
+                    # Attempt 2: ~8s
+                    # Attempt 3: ~16s
+                    # Attempt 4: ~32s
+                    wait_time = (2 ** (attempt + 1)) + random.uniform(0, 1)
+                    logger.warning(f"Rate limit hit for {model.model_name}. Retrying in {wait_time:.1f}s (Attempt {attempt+1}/{max_retries})...")
                     time.sleep(wait_time)
                     continue
             
@@ -140,8 +146,8 @@ def _safe_call_model(prompt: str) -> str:
         try:
             model = genai.GenerativeModel(model_name)
 
-            # Attempt generation with retry logic
-            response = _generate_with_retry(model, prompt, config, safety_settings)
+            # Attempt generation with retry logic (max 5 retries)
+            response = _generate_with_retry(model, prompt, config, safety_settings, max_retries=5)
             
             if not response.parts:
                 try:
@@ -156,7 +162,7 @@ def _safe_call_model(prompt: str) -> str:
             # Check if this was a rate limit that persisted through retries
             if "429" in str(e) or "quota" in str(e).lower():
                 logger.warning(f"Model '{model_name}' exhausted retries due to rate limits.")
-                last_error = "Rate limit exceeded. Please wait a moment before trying again."
+                last_error = "Rate limit exceeded. Please wait 1 minute before trying again."
             else:
                 logger.warning(f"Failed to use model '{model_name}': {e}")
                 last_error = e
@@ -167,7 +173,7 @@ def _safe_call_model(prompt: str) -> str:
     
     # Return a friendly error message for the UI
     if "rate limit" in str(last_error).lower():
-        return "⚠️ **AI Busy:** You are generating too fast. Please wait 30 seconds and try again."
+        return "⚠️ **AI Busy:** High traffic. I tried for ~60s but couldn't get through. Please wait a minute and click 'Generate' again."
         
     return f"⚠️ **AI Error:** Could not reach any Gemini model. ({str(last_error)})"
 
