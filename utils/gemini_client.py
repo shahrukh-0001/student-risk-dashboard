@@ -21,15 +21,14 @@ except ImportError:
     st = None
 
 # ---- CONFIGURATION ----
-# OPTIMIZED MODEL LIST:
-# 1. gemini-1.5-flash-8b: Lightweight, highest rate limits, best for free tier dashboards.
-# 2. gemini-1.5-flash: Standard fast model.
-# 3. gemini-1.5-pro: Powerful but very strict rate limits (avoid unless necessary).
+# OPTIMIZED MODEL LIST FOR STABILITY:
+# 1. gemini-1.5-flash: The Gold Standard for free tier (15 RPM).
+# 2. gemini-1.5-flash-8b: Fast backup.
+# REMOVED 'Pro' models because they have a 2 RPM limit which causes constant 429 errors.
 MODELS_TO_TRY = [
-    "gemini-1.5-flash-8b", 
-    "gemini-1.5-flash",
+    "gemini-1.5-flash", 
     "gemini-1.5-flash-latest",
-    "gemini-1.5-pro"
+    "gemini-1.5-flash-8b"
 ]
 
 def _get_api_key() -> Optional[str]:
@@ -74,7 +73,8 @@ def _get_fallback_model_name() -> Optional[str]:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 # Avoid experimental models if possible as they often have 0 quota
-                if "exp" not in m.name.lower():
+                name = m.name.lower()
+                if "exp" not in name and "pro" not in name: # Avoid Pro models in auto-discovery too
                     logger.info(f"Auto-discovered valid model: {m.name}")
                     return m.name
     except Exception as e:
@@ -83,9 +83,8 @@ def _get_fallback_model_name() -> Optional[str]:
 
 def _generate_with_retry(model, prompt, config, safety_settings, max_retries=3):
     """
-    Helper function to handle 429 Rate Limit errors with 'Bucket' backoff.
-    Since Free Tier often has ~2 RPM (Requests Per Minute), short waits don't help.
-    We need longer initial pauses.
+    Helper function to handle 429 Rate Limit errors.
+    Differentiates between 'Minute' limits (wait) and 'Daily' limits (stop).
     """
     for attempt in range(max_retries):
         try:
@@ -96,20 +95,23 @@ def _generate_with_retry(model, prompt, config, safety_settings, max_retries=3):
             )
         except Exception as e:
             error_str = str(e).lower()
-            # Check for rate limit (429) or quota errors
+            
+            # CRITICAL: Check for Daily Limit vs Minute Limit
+            if "quota" in error_str:
+                if "day" in error_str or "daily" in error_str:
+                    logger.error("Daily quota exceeded. Stopping retries.")
+                    raise RuntimeError("DAILY_QUOTA_EXCEEDED")
+            
+            # Check for Rate Limit (429) - usually per minute
             if "429" in error_str or "quota" in error_str:
                 if attempt < max_retries - 1:
-                    # SMART BACKOFF STRATEGY:
-                    # Attempt 0: Wait 10s (Clear short spikes)
-                    # Attempt 1: Wait 20s (Clear 2 RPM limit)
-                    # Attempt 2: Wait 40s (Last ditch effort)
-                    wait_time = (10 * (2 ** attempt)) + random.uniform(1, 3)
-                    
-                    logger.warning(f"Rate limit (429) on {model.model_name}. Pausing for {wait_time:.1f}s...")
+                    # Wait 5s, 10s, 20s
+                    wait_time = (5 * (2 ** attempt)) + random.uniform(1, 2)
+                    logger.warning(f"Rate limit hit ({model.model_name}). Pausing for {wait_time:.1f}s...")
                     time.sleep(wait_time)
                     continue
             
-            # If it's not a rate limit, or we ran out of retries, raise the error
+            # If unknown error or retries exhausted
             raise e
 
 
@@ -138,7 +140,7 @@ def _safe_call_model(prompt: str) -> str:
     # 1. Try Hardcoded Preferred Models
     candidate_models = MODELS_TO_TRY.copy()
     
-    # 2. Add Auto-discovered model (only if needed and strictly necessary)
+    # 2. Add Auto-discovered model (only if needed)
     fallback = _get_fallback_model_name()
     if fallback and fallback not in candidate_models:
         candidate_models.append(fallback)
@@ -161,13 +163,16 @@ def _safe_call_model(prompt: str) -> str:
             return response.text
 
         except Exception as e:
+            error_msg = str(e)
+            
+            # Catch the specific Daily Quota error we raised above
+            if "DAILY_QUOTA_EXCEEDED" in error_msg:
+                return "⚠️ **AI Quota Exceeded:** You have used your free daily allowance (~1500 requests). Please try again tomorrow."
+
             # Check if this was a rate limit that persisted through retries
-            if "429" in str(e) or "quota" in str(e).lower():
+            if "429" in error_msg or "quota" in error_msg.lower():
                 logger.warning(f"Model '{model_name}' exhausted retries due to rate limits.")
-                last_error = "Rate limit exceeded. Please wait a moment."
-                
-                # IMPORTANT: If we hit a rate limit, waiting a bit before trying the *next* model
-                # helps prevent triggering a project-wide ban.
+                last_error = "Rate limit exceeded."
                 time.sleep(2) 
             else:
                 logger.warning(f"Failed to use model '{model_name}': {e}")
@@ -179,7 +184,7 @@ def _safe_call_model(prompt: str) -> str:
     
     # Return a friendly error message for the UI
     if "rate limit" in str(last_error).lower():
-        return "⚠️ **AI Busy:** Daily/Minute quota exceeded. Please try again in 1-2 minutes."
+        return "⚠️ **AI Busy:** Too many requests in a short time. Please wait 1 full minute and try again."
         
     return f"⚠️ **AI Error:** Could not reach any Gemini model. ({str(last_error)})"
 
