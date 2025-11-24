@@ -1,0 +1,5 @@
+.env
+model.pkl
+student_datasheet.csv
+__pycache__/
+*.pkl
