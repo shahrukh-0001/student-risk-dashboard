@@ -3,30 +3,75 @@ import os
 from typing import Optional
 
 from dotenv import load_dotenv
-import google.generativeai as genai
 
 load_dotenv()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-AI_ENABLED = API_KEY is not None and API_KEY.strip() != ""
+# Optional: Streamlit ke bina bhi kaam chal sake isliye safe import
+try:
+    import streamlit as st
+except Exception:
+    st = None
+
+import google.generativeai as genai
+
+
+def _get_api_key() -> Optional[str]:
+    """
+    GEMINI_API_KEY ko pehle environment se, fir Streamlit secrets se read karta hai.
+    """
+    key = os.getenv("GEMINI_API_KEY")
+
+    # Agar env me nahi hai aur Streamlit secrets available hain
+    if (not key or not key.strip()) and st is not None:
+        try:
+            key = st.secrets.get("GEMINI_API_KEY", None)
+        except Exception:
+            key = None
+
+    if key is not None:
+        key = key.strip()
+
+    return key
+
+
+API_KEY = _get_api_key()
+AI_ENABLED = API_KEY not in (None, "")
 
 if AI_ENABLED:
-    genai.configure(api_key=API_KEY)
-    _model = genai.GenerativeModel("gemini-2.5-flash")
+    try:
+        genai.configure(api_key=API_KEY)
+        _model = genai.GenerativeModel("gemini-pro-latest")
+    except Exception as e:
+        print("Error configuring Gemini:", e)
+        _model = None
+        AI_ENABLED = False
 else:
     _model = None
 
 
-def generate_dataset_insights(summary_dict: dict, extra_instructions: Optional[str] = None) -> str:
+def _safe_call_model(prompt: str) -> str:
     """
-    Dataset level insights: teacher / admin ke liye.
+    GenerateContent ko safe tarike se call karta hai, error aane par
+    readable message return karta hai.
     """
     if not AI_ENABLED or _model is None:
         return (
-            "⚠️ Gemini API key configured nahi hai (.env me GEMINI_API_KEY set karo), "
-            "isliye AI insights disabled hain."
+            "⚠️ AI insights currently disabled. "
+            "Please configure GEMINI_API_KEY in environment or Streamlit secrets."
         )
 
+    try:
+        resp = _model.generate_content(prompt)
+        return getattr(resp, "text", str(resp))
+    except Exception as e:
+        print("Gemini API error:", e)
+        return (
+            "⚠️ Unable to fetch AI insights from Gemini right now.\n\n"
+            f"Technical error: `{e}`"
+        )
+
+
+def generate_dataset_insights(summary_dict: dict, extra_instructions: Optional[str] = None) -> str:
     base_prompt = f"""
     You are an AI academic analyst.
 
@@ -35,44 +80,33 @@ def generate_dataset_insights(summary_dict: dict, extra_instructions: Optional[s
 
     Please:
     - Explain the overall performance and risk in simple terms.
-    - Highlight key risk factors (attendance, internal tests, final exam).
-    - Give 3–5 actionable recommendations for faculty to improve pass rates.
+    - Highlight key risk factors.
+    - Give 3–5 actionable recommendations.
 
     Keep the answer short, structured, and easy to understand.
     """
 
     if extra_instructions and extra_instructions.strip():
-        base_prompt += f"\n\nAdditional instructions from the user:\n{extra_instructions}"
+        base_prompt += f"\n\nAdditional instructions:\n{extra_instructions}"
 
-    resp = _model.generate_content(base_prompt)
-    return resp.text
+    return _safe_call_model(base_prompt)
 
 
 def generate_student_advice(student_row_dict: dict, extra_instructions: Optional[str] = None) -> str:
-    """
-    Single student ke liye personalised advice.
-    """
-    if not AI_ENABLED or _model is None:
-        return (
-            "⚠️ GEMINI_API_KEY set nahi hai, isliye student-wise AI advice disabled hai."
-        )
-
     base_prompt = f"""
     You are a friendly academic mentor.
 
-    Here is a student's data (including predicted fail probability):
+    Here is a student's data:
     {student_row_dict}
 
-    Please:
-    - Explain in simple language if the student seems safe or at risk.
-    - Point out the weakest areas (like tests, attendance, final exam).
-    - Give 3–4 very practical and motivating suggestions.
-
-    Keep tone positive and supportive.
+    Please give helpful advice:
+    - Explain if the student is doing well or at risk.
+    - Identify weak areas.
+    - Give 3–4 actionable study suggestions.
+    - Keep tone motivational.
     """
 
     if extra_instructions and extra_instructions.strip():
-        base_prompt += f"\n\nAdditional instructions from the user:\n{extra_instructions}"
+        base_prompt += f"\n\nAdditional instructions:\n{extra_instructions}"
 
-    resp = _model.generate_content(base_prompt)
-    return resp.text
+    return _safe_call_model(base_prompt)
