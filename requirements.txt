@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+openpyxl
+python-dotenv
+google-generativeai>=0.7.0
+protobuf==3.20.3
