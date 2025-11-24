@@ -1,4 +1,5 @@
 # app.py
+
 import os
 import pickle
 from io import StringIO
@@ -55,6 +56,7 @@ def main():
 
     # ---- SIDEBAR: DATA INPUT MODE ----
     st.sidebar.header("Data Input Mode")
+    
 
     mode = st.sidebar.radio(
         "Select data input method",
