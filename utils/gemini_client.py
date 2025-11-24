@@ -124,7 +124,6 @@ def _safe_call_model(prompt: str) -> str:
                 try:
                     return response.text
                 except ValueError:
-                    # If blocked, try to return a generic fallback instead of an error
                     logger.warning(f"Gemini ({model_name}) blocked response.")
                     return "⚠️ **Analysis Paused:** The AI flagged this content. Please ensure no real student names are used."
 
@@ -166,26 +165,44 @@ def generate_dataset_insights(summary_dict: Dict[str, Any], extra_instructions: 
     return _safe_call_model(base_prompt)
 
 def generate_student_advice(student_row: Dict[str, Any], extra_instructions: Optional[str] = None) -> str:
-    """Generates personalized advice, stripping PII to prevent safety blocks."""
+    """Generates personalized advice, using STRICT allowlisting to prevent PII leaks."""
     
-    # ---- CRITICAL PII STRIPPING ----
-    # Removing Name, ID, and other identifiers prevents the AI from thinking 
-    # we are "harassing" a real person with negative feedback.
-    sensitive_keys = ['Name', 'StudentID', 'Email', 'Phone', 'Address', 'Gender']
-    clean_data = {
-        k: v for k, v in student_row.items() 
-        if not k.endswith('_Norm') and k not in sensitive_keys
-    }
+    # ---- STRICT ALLOWLIST APPROACH ----
+    # Instead of guessing what to remove, we only include what we know is safe.
+    # We keep numbers (scores) and specific safe categories.
+    # We drop ALL other strings (which might be names, emails, addresses).
+    
+    safe_columns = ['Semester', 'Department', 'PassFail', 'Grade', 'Class', 'Section']
+    clean_data = {}
+    
+    for key, value in student_row.items():
+        # Skip technical/norm columns
+        if key.endswith('_Norm') or key == "index": 
+            continue
+            
+        # 1. Allow numeric values (int, float) - Scores, Attendance, etc.
+        # Check against simple python types. Numpy types usually behave like numbers in boolean checks, 
+        # but to be safe we check if it's NOT a string first.
+        if not isinstance(value, str):
+             clean_data[key] = value
+             continue
+             
+        # 2. Allow specific safe text fields
+        if key in safe_columns:
+            clean_data[key] = value
+            
+    # If "Name", "Student_ID", or "Email" was in the row, it is now excluded because 
+    # it is a string and NOT in 'safe_columns'.
 
     base_prompt = f"""
     Role: Academic Mentor.
-    Task: Provide study advice based on these scores.
+    Task: Provide study advice based on these academic metrics.
     
-    Student Scores:
+    Academic Profile:
     {clean_data}
     
     Please provide:
-    1. Current Academic Standing (e.g., On Track, Needs Focus).
+    1. Current Academic Status (e.g., On Track, Needs Focus).
     2. Specific subjects/areas needing attention.
     3. 3 study tips to improve outcomes.
     
