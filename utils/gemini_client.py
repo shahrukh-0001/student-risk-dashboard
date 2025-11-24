@@ -46,24 +46,22 @@ else:
 def _safe_call_model(prompt: str) -> str:
     """
     Yahi se actual Gemini call hota hai.
-    Error aaye to app crash nahi karega.
+    Error aaye to app crash nahi karega,
+    aur UI me kuch bhi error text nahi dikhayega.
     """
     if not AI_ENABLED or _model is None:
-        return (
-            "⚠️ AI insights are currently disabled. "
-            "Please configure GEMINI_API_KEY in Streamlit secrets or environment."
-        )
+        # Sirf console me log, UI me kuch nahi
+        print("AI disabled or model not initialised. Check GEMINI_API_KEY.")
+        return ""
 
     try:
         resp = _model.generate_content(prompt)
         return getattr(resp, "text", str(resp))
     except Exception as e:
-        # Yahan sabhi Gemini errors catch ho jayenge
+        # Error ko sirf backend me log karo
         print("Gemini API error:", e)
-        return (
-            "⚠️ Unable to fetch AI insights from Gemini right now.\n\n"
-            f"Technical error (hidden in UI): `{e}`"
-        )
+        return ""  # UI me kuch nahi dikhega
+
 
 
 def generate_dataset_insights(summary_dict: dict, extra_instructions: Optional[str] = None) -> str:

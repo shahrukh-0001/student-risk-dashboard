@@ -293,31 +293,37 @@ def main():
             st.info("No students found for the selected filters.")
 
     # ---- DATASET-LEVEL AI INSIGHTS ----
-    st.markdown("## 🤖 AI Insights for This Dataset")
+st.markdown("## 🤖 AI Insights for This Dataset")
 
-    dataset_extra = st.text_area(
-        "Optional extra instructions for AI (leave blank for default behaviour)",
-        "",
-        height=80,
-    )
+dataset_extra = st.text_area(
+    "Optional extra instructions for AI (leave blank for default behaviour)",
+    "",
+    height=80,
+)
 
-    if st.button("Generate AI Insights"):
-            summary_dict = {
+if st.button("Generate AI Insights"):
+    # Yahin define ho raha hai, iske bahar use nahi kar rahe,
+    # isliye 'summary_dict' wala error nahi aayega.
+    summary_dict = {
         "total_students": int(total_students),
         "pass_count": int(pass_count),
         "fail_count": int(fail_count),
-        "avg_attendance": float(avg_attendance) if avg_attendance is not None else None,
+        "avg_attendance": float(avg_attendance)
+        if avg_attendance is not None
+        else None,
         "avg_total": float(avg_total) if avg_total is not None else None,
         "avg_fail_probability": float(avg_fail_prob),
     }
 
-    try:
-        with st.spinner("Asking AI for insights..."):
-            insights = generate_dataset_insights(summary_dict, dataset_extra)
+    with st.spinner("Asking AI for insights..."):
+        insights = generate_dataset_insights(summary_dict, dataset_extra)
+
+    # Agar Gemini fail ho gaya to insights = "" hoga,
+    # UI me kuch bhi show nahi karenge.
+    if insights and insights.strip():
         st.markdown(insights)
-    except Exception as e:
-        st.error("⚠️ AI insights are temporarily unavailable.")
-        st.text(str(e))
+    # else: kuch mat karo, no error, no warning
+
 
 
     # ---- STUDENT-WISE AI ADVICE ----
