@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # Setup simple logging to track issues
 logging.basicConfig(level=logging.INFO)
@@ -18,22 +19,20 @@ except ImportError:
     st = None
 
 # ---- CONFIGURATION ----
-MODEL_NAME = "gemini-pro-latest" 
+# List of models to try in order of preference.
+MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-1.5-flash-001", "gemini-pro"]
 
 def _get_api_key() -> Optional[str]:
     """
     Retrieves API key from Environment Variables or Streamlit Secrets.
     Returns None if not found.
     """
-    # 1. Check Environment Variable (Local/Docker/Cloud Run)
     key = os.getenv("GEMINI_API_KEY")
-    
-    # 2. Check Streamlit Secrets (Streamlit Cloud)
     if (not key or not key.strip()) and st is not None:
         try:
             key = st.secrets.get("GEMINI_API_KEY", None)
         except Exception:
-            pass # Secrets file might not exist
+            pass 
             
     if key:
         return key.strip()
@@ -57,34 +56,61 @@ def _initialize_genai():
 
 def _safe_call_model(prompt: str) -> str:
     """
-    Executes the API call with error handling.
-    Returns specific error messages to the UI if something goes wrong.
+    Executes the API call with error handling, model fallback, and lenient safety settings.
     """
     if not _initialize_genai():
         return "⚠️ **AI Unavailable:** `GEMINI_API_KEY` not found. Please set it in your `.env` file or Streamlit secrets."
 
-    try:
-        # Create model instance
-        model = genai.GenerativeModel(MODEL_NAME)
-        
-        # Generation Config
-        config = genai.GenerationConfig(
-            temperature=0.7,
-            max_output_tokens=500,
-        )
+    last_error = None
 
-        response = model.generate_content(prompt, generation_config=config)
-        
-        # Check if response was blocked or empty
-        if not response.parts:
-            logger.warning("Gemini response was empty or blocked by safety filters.")
-            return "⚠️ **AI Analysis Unavailable:** The model blocked the response (Safety Filter triggered)."
+    # ---- SAFETY SETTINGS ----
+    # We disable blocks because academic terms like "Fail", "Risk", or "Poor Performance" 
+    # often trigger false positives in the harassment/hate speech categories.
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
 
-        return response.text
+    # Iterate through models list to find one that works
+    for model_name in MODELS_TO_TRY:
+        try:
+            # Create model instance
+            model = genai.GenerativeModel(model_name)
+            
+            # Generation Config
+            config = genai.GenerationConfig(
+                temperature=0.7,
+                max_output_tokens=800, # Increased slightly for detailed advice
+            )
 
-    except Exception as e:
-        logger.error(f"Gemini API execution error: {e}")
-        return f"⚠️ **AI Error:** {str(e)}"
+            # Attempt generation with explicit safety settings
+            response = model.generate_content(
+                prompt, 
+                generation_config=config,
+                safety_settings=safety_settings
+            )
+            
+            # Check if response was blocked or empty
+            if not response.parts:
+                # Sometimes parts are empty but text is available via a different path in older libs,
+                # but usually this means a block.
+                try:
+                    return response.text
+                except ValueError:
+                    logger.warning(f"Gemini ({model_name}) response was blocked despite safety settings.")
+                    return "⚠️ **AI Analysis Unavailable:** The model refused to answer. Try simplifying the student data or request."
+
+            return response.text
+
+        except Exception as e:
+            logger.warning(f"Failed to use model '{model_name}': {e}")
+            last_error = e
+            continue # Try the next model in the list
+
+    logger.error(f"All Gemini models failed. Last error: {last_error}")
+    return f"⚠️ **AI Error:** Could not reach any Gemini model. (Last error: {str(last_error)})"
 
 
 def generate_dataset_insights(summary_dict: Dict[str, Any], extra_instructions: Optional[str] = None) -> str:
