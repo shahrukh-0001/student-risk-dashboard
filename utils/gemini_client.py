@@ -18,7 +18,7 @@ except ImportError:
     st = None
 
 # ---- CONFIGURATION ----
-MODEL_NAME = "gemini-1.5-flash" 
+MODEL_NAME = "gemini-pro-latest" 
 
 def _get_api_key() -> Optional[str]:
     """
