@@ -1,5 +1,7 @@
 import os
 import logging
+import time
+import random
 from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
@@ -63,17 +65,44 @@ def _initialize_genai():
 def _get_fallback_model_name() -> Optional[str]:
     """
     Auto-discovery: Queries the API for ANY available model that supports generation.
-    Used if all hardcoded model names fail.
+    Filters out experimental models to avoid strict quota limits.
     """
     try:
         logger.info("Attempting to auto-discover available models...")
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                logger.info(f"Auto-discovered valid model: {m.name}")
-                return m.name
+                # Avoid experimental models if possible as they often have 0 quota
+                if "exp" not in m.name.lower():
+                    logger.info(f"Auto-discovered valid model: {m.name}")
+                    return m.name
     except Exception as e:
         logger.error(f"Auto-discovery failed: {e}")
     return None
+
+def _generate_with_retry(model, prompt, config, safety_settings, max_retries=3):
+    """
+    Helper function to handle 429 Rate Limit errors with backoff.
+    """
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(
+                prompt, 
+                generation_config=config, 
+                safety_settings=safety_settings
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check for rate limit (429) or quota errors
+            if "429" in error_str or "quota" in error_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2s, 4s, 8s... + random jitter
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"Rate limit hit for {model.model_name}. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                    continue
+            
+            # If it's not a rate limit, or we ran out of retries, raise the error
+            raise e
 
 
 def _safe_call_model(prompt: str) -> str:
@@ -93,7 +122,6 @@ def _safe_call_model(prompt: str) -> str:
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     }
     
-    # Define generation config
     config = genai.GenerationConfig(
         temperature=0.7,
         max_output_tokens=800,
@@ -102,7 +130,7 @@ def _safe_call_model(prompt: str) -> str:
     # 1. Try Hardcoded Preferred Models
     candidate_models = MODELS_TO_TRY.copy()
     
-    # 2. Add Auto-discovered model to the end of the list as a last resort
+    # 2. Add Auto-discovered model (only if needed)
     fallback = _get_fallback_model_name()
     if fallback and fallback not in candidate_models:
         candidate_models.append(fallback)
@@ -110,34 +138,38 @@ def _safe_call_model(prompt: str) -> str:
     # Iterate through models list to find one that works
     for model_name in candidate_models:
         try:
-            # Create model instance
             model = genai.GenerativeModel(model_name)
 
-            # Attempt generation
-            response = model.generate_content(
-                prompt, 
-                generation_config=config,
-                safety_settings=safety_settings
-            )
+            # Attempt generation with retry logic
+            response = _generate_with_retry(model, prompt, config, safety_settings)
             
-            # Check if response was blocked or empty
             if not response.parts:
                 try:
                     return response.text
                 except ValueError:
-                    logger.warning(f"Gemini ({model_name}) response was blocked despite safety settings.")
+                    logger.warning(f"Gemini ({model_name}) response was blocked.")
                     return "⚠️ **AI Analysis Unavailable:** The model refused to answer (Safety Block)."
 
             return response.text
 
         except Exception as e:
-            # 404 means model not found, try next. Other errors might be auth related.
-            logger.warning(f"Failed to use model '{model_name}': {e}")
-            last_error = e
+            # Check if this was a rate limit that persisted through retries
+            if "429" in str(e) or "quota" in str(e).lower():
+                logger.warning(f"Model '{model_name}' exhausted retries due to rate limits.")
+                last_error = "Rate limit exceeded. Please wait a moment before trying again."
+            else:
+                logger.warning(f"Failed to use model '{model_name}': {e}")
+                last_error = e
+            
             continue 
 
     logger.error(f"All Gemini models failed. Last error: {last_error}")
-    return f"⚠️ **AI Error:** Could not reach any Gemini model. (Last error: {str(last_error)})"
+    
+    # Return a friendly error message for the UI
+    if "rate limit" in str(last_error).lower():
+        return "⚠️ **AI Busy:** You are generating too fast. Please wait 30 seconds and try again."
+        
+    return f"⚠️ **AI Error:** Could not reach any Gemini model. ({str(last_error)})"
 
 
 def generate_dataset_insights(summary_dict: Dict[str, Any], extra_instructions: Optional[str] = None) -> str:
@@ -173,7 +205,6 @@ def generate_student_advice(student_row: Dict[str, Any], extra_instructions: Opt
     """
     Generates personalized advice for a specific student.
     """
-    # Clean up the dictionary for the prompt (remove norm columns if they exist to save tokens/noise)
     clean_data = {k: v for k, v in student_row.items() if not k.endswith('_Norm')}
 
     base_prompt = f"""
