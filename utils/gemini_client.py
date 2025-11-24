@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Setup simple logging to track issues without crashing UI
+# Setup simple logging to track issues
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,6 @@ except ImportError:
     st = None
 
 # ---- CONFIGURATION ----
-# "gemini-1.5-flash" is faster and better for dashboards than gemini-pro
 MODEL_NAME = "gemini-1.5-flash" 
 
 def _get_api_key() -> Optional[str]:
@@ -59,16 +58,16 @@ def _initialize_genai():
 def _safe_call_model(prompt: str) -> str:
     """
     Executes the API call with error handling.
-    Swallows exceptions to prevent UI crashes, returning empty string on failure.
+    Returns specific error messages to the UI if something goes wrong.
     """
     if not _initialize_genai():
-        return ""
+        return "⚠️ **AI Unavailable:** `GEMINI_API_KEY` not found. Please set it in your `.env` file or Streamlit secrets."
 
     try:
         # Create model instance
         model = genai.GenerativeModel(MODEL_NAME)
         
-        # Generation Config (Optional: can limit tokens or set temperature)
+        # Generation Config
         config = genai.GenerationConfig(
             temperature=0.7,
             max_output_tokens=500,
@@ -79,13 +78,13 @@ def _safe_call_model(prompt: str) -> str:
         # Check if response was blocked or empty
         if not response.parts:
             logger.warning("Gemini response was empty or blocked by safety filters.")
-            return "AI Analysis unavailable (Safety Filter triggered)."
+            return "⚠️ **AI Analysis Unavailable:** The model blocked the response (Safety Filter triggered)."
 
         return response.text
 
     except Exception as e:
         logger.error(f"Gemini API execution error: {e}")
-        return "" # Fail silently in UI, log in console
+        return f"⚠️ **AI Error:** {str(e)}"
 
 
 def generate_dataset_insights(summary_dict: Dict[str, Any], extra_instructions: Optional[str] = None) -> str:
